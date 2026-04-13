@@ -28,19 +28,20 @@ For every processed file:
 - `ffmpeg` and `ffprobe` (auto-installed on first run if missing)
 - Python packages: `spleeter`, `mutagen`, `pydub` (auto-installed on first run)
 
-`_install.sh` sets up everything in an isolated virtual environment so
-Spleeter's heavy dependency tree (TensorFlow, numpy, etc.) never collides
-with your system Python:
+`mp3_voiceoff.py` is self-bootstrapping. The **first time** you run it, it
+will — without any external help — do everything needed so Spleeter's heavy
+dependency tree (TensorFlow, numpy, etc.) never collides with your system
+Python:
 
-1. Creates a venv at `~/.local/share/mp3_voiceoff/venv`.
-2. `pip install`s `spleeter`, `mutagen`, and `pydub` into that venv.
-3. Installs `ffmpeg` via the native package manager if it is not already
+1. Installs `ffmpeg` via the native package manager if it is not already
    available.
-4. Copies `mp3_voiceoff.py` to `~/.local/share/mp3_voiceoff/` and drops a
-   thin launcher at `~/bin/mp3_voiceoff` that execs the script using the
-   venv's Python.
+2. Creates a dedicated venv at `~/.local/share/mp3_voiceoff/venv`.
+3. `pip install`s `spleeter`, `mutagen`, and `pydub` into that venv.
+4. Re-executes itself using the venv's Python and runs normally.
 5. Spleeter downloads its pretrained 2stems model (~75 MB, one-time) into
    `./pretrained_models/` on the first separation call.
+
+Subsequent runs reuse the same venv and skip the bootstrap path.
 
 | Platform                      | Package manager |
 |-------------------------------|-----------------|
@@ -59,12 +60,18 @@ On macOS, [Homebrew](https://brew.sh/) must be installed first.
 ```sh
 git clone <this-repo>
 cd mp3_voiceoff
-./_install.sh          # creates ~/.local/share/mp3_voiceoff/venv and ~/bin/mp3_voiceoff
+
+# Option A: run in place — first run bootstraps everything
+./mp3_voiceoff.py
+
+# Option B: put it on PATH as `mp3_voiceoff` (no .py extension)
+./_install.sh
 ```
 
-`_install.sh` creates `~/bin` if it does not already exist. After install you
-can run the tool just as `mp3_voiceoff` from anywhere (provided `~/bin` is on
-your `PATH`).
+`_install.sh` is just a thin helper that copies `mp3_voiceoff.py` to
+`~/bin/mp3_voiceoff` (creating `~/bin` if needed). All dependency
+installation — ffmpeg, the dedicated venv, and the Python packages — is
+handled by `mp3_voiceoff` itself on its first run.
 
 ## Usage
 

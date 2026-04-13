@@ -33,6 +33,16 @@ from pathlib import Path
 TAG = "[mp3_voiceoff]"
 REQUIRED_PKGS = ["spleeter", "mutagen", "pydub"]
 
+CREDIT = (
+    "mp3_voiceoff - Remove vocals from MP3 files using Spleeter\n"
+    "Author : Chun Kang <ck@ckii.com>\n"
+    "License: Apache License 2.0"
+)
+
+APP_DIR = Path.home() / ".local" / "share" / "mp3_voiceoff"
+VENV_DIR = APP_DIR / "venv"
+BOOTSTRAP_ENV_FLAG = "MP3_VOICEOFF_BOOTSTRAPPED"
+
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -51,32 +61,28 @@ def die(msg: str, code: int = 1) -> "None":
 
 
 # ---------------------------------------------------------------------------
-# Dependency bootstrap
+# Self-bootstrap: ensure ffmpeg + dedicated venv + Python deps, then re-exec
 # ---------------------------------------------------------------------------
+def _venv_python() -> Path:
+    if platform.system() == "Windows":
+        return VENV_DIR / "Scripts" / "python.exe"
+    return VENV_DIR / "bin" / "python"
+
+
+def _running_in_managed_venv() -> bool:
+    vp = _venv_python()
+    if not vp.exists():
+        return False
+    try:
+        return Path(sys.executable).resolve() == vp.resolve()
+    except OSError:
+        return False
+
+
 def _missing_python_packages() -> list[str]:
     import importlib.util
 
-    missing = []
-    for pkg in REQUIRED_PKGS:
-        if importlib.util.find_spec(pkg) is None:
-            missing.append(pkg)
-    return missing
-
-
-def ensure_python_packages() -> None:
-    missing = _missing_python_packages()
-    if not missing:
-        return
-    log(f"Installing missing Python packages: {', '.join(missing)}")
-    cmd = [sys.executable, "-m", "pip", "install", *missing]
-    try:
-        subprocess.check_call(cmd)
-    except subprocess.CalledProcessError as e:
-        die(f"pip install failed: {e}")
-
-    still = _missing_python_packages()
-    if still:
-        die(f"Still missing after install: {', '.join(still)}")
+    return [p for p in REQUIRED_PKGS if importlib.util.find_spec(p) is None]
 
 
 def ensure_ffmpeg() -> None:
@@ -119,17 +125,51 @@ def ensure_ffmpeg() -> None:
         die("ffmpeg still not available after install.")
 
 
-def ensure_spleeter_cli() -> None:
-    if shutil.which("spleeter") is None:
-        # Spleeter is installed as a package but the CLI entry point may not
-        # be on PATH when using --user installs. Fall back to `python -m`.
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "spleeter", "--help"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        except subprocess.CalledProcessError:
-            die("spleeter CLI is not runnable.")
+def _create_venv() -> None:
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    log(f"Creating venv: {VENV_DIR}")
+    try:
+        subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+    except subprocess.CalledProcessError:
+        # Debian/Ubuntu may ship Python without the venv module.
+        if platform.system() == "Linux" and shutil.which("apt-get"):
+            log("python3-venv appears to be missing; installing it...")
+            sudo = [] if os.geteuid() == 0 else (["sudo"] if shutil.which("sudo") else [])
+            subprocess.check_call(sudo + ["apt-get", "install", "-y", "python3-venv"])
+            subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+        else:
+            raise
+
+
+def _pip_install_deps() -> None:
+    pip = _venv_python().with_name("pip")
+    log("Upgrading pip inside venv")
+    subprocess.check_call([str(pip), "install", "--upgrade", "pip"])
+    log(f"Installing {', '.join(REQUIRED_PKGS)} into venv")
+    subprocess.check_call([str(pip), "install", *REQUIRED_PKGS])
+
+
+def bootstrap_and_reexec() -> None:
+    if os.environ.get(BOOTSTRAP_ENV_FLAG) == "1":
+        die("bootstrap loop detected; venv is not usable")
+
+    ensure_ffmpeg()
+
+    if not VENV_DIR.exists():
+        _create_venv()
+
+    # Re-exec inside the venv so pip/imports happen with its interpreter.
+    if not _running_in_managed_venv():
+        vp = _venv_python()
+        env = os.environ.copy()
+        env[BOOTSTRAP_ENV_FLAG] = "1"
+        os.execve(str(vp), [str(vp), str(Path(__file__).resolve()), *sys.argv[1:]], env)
+
+    if _missing_python_packages():
+        _pip_install_deps()
+        still = _missing_python_packages()
+        if still:
+            die(f"Still missing after install: {', '.join(still)}")
 
 
 def spleeter_command() -> list[str]:
@@ -293,7 +333,18 @@ def process_file(src: Path) -> bool:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+def print_credit() -> None:
+    if os.environ.get(BOOTSTRAP_ENV_FLAG) == "1":
+        # Suppress duplicate banner on the post-bootstrap re-exec.
+        return
+    bar = "=" * 60
+    print(bar)
+    print(CREDIT)
+    print(bar)
+
+
 def main() -> None:
+    print_credit()
     parser = argparse.ArgumentParser(
         description="Remove vocals from MP3 files using Spleeter.",
     )
@@ -305,9 +356,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    ensure_python_packages()
+    if not _running_in_managed_venv() or _missing_python_packages():
+        bootstrap_and_reexec()
+
     ensure_ffmpeg()
-    ensure_spleeter_cli()
 
     files = find_files(args.patterns)
     if not files:
