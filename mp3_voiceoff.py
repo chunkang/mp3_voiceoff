@@ -189,30 +189,33 @@ def read_title(path: Path) -> str:
 
 
 def apply_tags(src: Path, dst: Path, new_title: str) -> None:
-    from mutagen.easyid3 import EasyID3
-    from mutagen.id3 import ID3NoHeaderError
+    from mutagen.id3 import ID3, ID3NoHeaderError, TIT2
     from mutagen.mp3 import MP3
 
-    # Ensure destination has an ID3 header
     try:
-        dst_tags = EasyID3(str(dst))
+        src_id3 = ID3(str(src))
+    except ID3NoHeaderError:
+        src_id3 = None
+    except Exception as e:
+        warn(f"could not read source tags: {e}")
+        src_id3 = None
+
+    try:
+        dst_id3 = ID3(str(dst))
     except ID3NoHeaderError:
         mp3 = MP3(str(dst))
         mp3.add_tags()
         mp3.save()
-        dst_tags = EasyID3(str(dst))
+        dst_id3 = ID3(str(dst))
 
-    try:
-        src_tags = EasyID3(str(src))
-        for key, value in src_tags.items():
-            dst_tags[key] = value
-    except ID3NoHeaderError:
-        pass
-    except Exception as e:
-        warn(f"could not read source tags: {e}")
+    if src_id3 is not None:
+        dst_id3.clear()
+        for frame in src_id3.values():
+            dst_id3.add(frame)
 
-    dst_tags["title"] = new_title
-    dst_tags.save()
+    dst_id3.delall("TIT2")
+    dst_id3.add(TIT2(encoding=3, text=new_title))
+    dst_id3.save(str(dst), v2_version=3)
 
 
 # ---------------------------------------------------------------------------
