@@ -224,8 +224,12 @@ def _create_venv() -> None:
 
 def _pip_install_deps() -> None:
     pip = _venv_python().with_name("pip")
-    log("Upgrading pip/setuptools/wheel inside venv")
-    subprocess.check_call([str(pip), "install", "--upgrade", "pip", "setuptools", "wheel"])
+    log("Upgrading pip inside venv")
+    subprocess.check_call([str(pip), "install", "--upgrade", "pip"])
+    # Spleeter pulls old numba (0.55.x) which imports pkg_resources at import
+    # time; setuptools>=81 dropped pkg_resources, so pin an older setuptools.
+    log("Pinning setuptools<81 for old numba compatibility")
+    subprocess.check_call([str(pip), "install", "setuptools<81"])
     log(f"Installing {', '.join(REQUIRED_PKGS)} into venv")
     # --only-binary=:all: forces pip to pick a wheel-satisfiable solve.
     # Spleeter's transitive deps (old numba, old numpy via h5py) otherwise
