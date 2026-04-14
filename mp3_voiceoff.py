@@ -43,6 +43,10 @@ APP_DIR = Path.home() / ".local" / "share" / "mp3_voiceoff"
 VENV_DIR = APP_DIR / "venv"
 BOOTSTRAP_ENV_FLAG = "MP3_VOICEOFF_BOOTSTRAPPED"
 
+# Spleeter's pinned TensorFlow/numpy only build on CPython 3.8-3.10.
+SUPPORTED_PY = ((3, 8), (3, 9), (3, 10))
+PREFERRED_PY = (3, 10)
+
 
 # ---------------------------------------------------------------------------
 # Logging helpers
@@ -77,6 +81,72 @@ def _running_in_managed_venv() -> bool:
         return Path(sys.executable).resolve() == vp.resolve()
     except OSError:
         return False
+
+
+def _python_version(exe: str | Path) -> tuple[int, int] | None:
+    try:
+        out = subprocess.check_output(
+            [str(exe), "-c", "import sys;print(sys.version_info.major,sys.version_info.minor)"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip().split()
+        return (int(out[0]), int(out[1]))
+    except (OSError, subprocess.CalledProcessError, ValueError, IndexError):
+        return None
+
+
+def _is_supported_py(ver: tuple[int, int] | None) -> bool:
+    return ver is not None and ver in SUPPORTED_PY
+
+
+def _find_compatible_python() -> Path | None:
+    candidates: list[str] = []
+    # Preferred first, then the rest.
+    order = [PREFERRED_PY] + [v for v in SUPPORTED_PY if v != PREFERRED_PY]
+    for major, minor in order:
+        candidates.append(f"python{major}.{minor}")
+    # Homebrew keg-only locations on macOS.
+    if platform.system() == "Darwin":
+        for major, minor in order:
+            for prefix in ("/opt/homebrew/opt", "/usr/local/opt"):
+                candidates.append(f"{prefix}/python@{major}.{minor}/bin/python{major}.{minor}")
+
+    for c in candidates:
+        path = shutil.which(c) if "/" not in c else (c if Path(c).exists() else None)
+        if not path:
+            continue
+        if _is_supported_py(_python_version(path)):
+            return Path(path)
+    return None
+
+
+def _install_compatible_python() -> Path | None:
+    system = platform.system()
+    target = f"python@{PREFERRED_PY[0]}.{PREFERRED_PY[1]}"
+    if system == "Darwin":
+        if not shutil.which("brew"):
+            die("Homebrew is required on macOS. Install from https://brew.sh/")
+        log(f"Installing {target} via Homebrew (Spleeter needs Python <=3.10)")
+        subprocess.check_call(["brew", "install", target])
+    elif system == "Linux":
+        sudo = [] if os.geteuid() == 0 else (["sudo"] if shutil.which("sudo") else [])
+        pkg = f"python{PREFERRED_PY[0]}.{PREFERRED_PY[1]}"
+        if shutil.which("apt-get"):
+            log(f"Installing {pkg} via apt (Spleeter needs Python <=3.10)")
+            subprocess.check_call(sudo + ["apt-get", "update"])
+            subprocess.check_call(sudo + ["apt-get", "install", "-y", pkg, f"{pkg}-venv"])
+        else:
+            return None
+    else:
+        return None
+    return _find_compatible_python()
+
+
+def _venv_is_compatible() -> bool:
+    vp = _venv_python()
+    if not vp.exists():
+        return False
+    return _is_supported_py(_python_version(vp))
 
 
 def _missing_python_packages() -> list[str]:
@@ -127,16 +197,27 @@ def ensure_ffmpeg() -> None:
 
 def _create_venv() -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    log(f"Creating venv: {VENV_DIR}")
+
+    py = _find_compatible_python()
+    if py is None:
+        py = _install_compatible_python()
+    if py is None:
+        die(
+            "Could not find or install a compatible Python interpreter. "
+            f"Spleeter requires CPython {SUPPORTED_PY[0][0]}.{SUPPORTED_PY[0][1]}-"
+            f"{SUPPORTED_PY[-1][0]}.{SUPPORTED_PY[-1][1]}."
+        )
+
+    log(f"Creating venv with {py}: {VENV_DIR}")
     try:
-        subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+        subprocess.check_call([str(py), "-m", "venv", str(VENV_DIR)])
     except subprocess.CalledProcessError:
         # Debian/Ubuntu may ship Python without the venv module.
         if platform.system() == "Linux" and shutil.which("apt-get"):
             log("python3-venv appears to be missing; installing it...")
             sudo = [] if os.geteuid() == 0 else (["sudo"] if shutil.which("sudo") else [])
             subprocess.check_call(sudo + ["apt-get", "install", "-y", "python3-venv"])
-            subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
+            subprocess.check_call([str(py), "-m", "venv", str(VENV_DIR)])
         else:
             raise
 
@@ -154,6 +235,10 @@ def bootstrap_and_reexec() -> None:
         die("bootstrap loop detected; venv is not usable")
 
     ensure_ffmpeg()
+
+    if VENV_DIR.exists() and not _venv_is_compatible():
+        log(f"Existing venv uses an unsupported Python; recreating: {VENV_DIR}")
+        shutil.rmtree(VENV_DIR)
 
     if not VENV_DIR.exists():
         _create_venv()
