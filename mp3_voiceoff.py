@@ -224,10 +224,13 @@ def _create_venv() -> None:
 
 def _pip_install_deps() -> None:
     pip = _venv_python().with_name("pip")
-    log("Upgrading pip inside venv")
-    subprocess.check_call([str(pip), "install", "--upgrade", "pip"])
+    log("Upgrading pip/setuptools/wheel inside venv")
+    subprocess.check_call([str(pip), "install", "--upgrade", "pip", "setuptools", "wheel"])
     log(f"Installing {', '.join(REQUIRED_PKGS)} into venv")
-    subprocess.check_call([str(pip), "install", *REQUIRED_PKGS])
+    # --only-binary=:all: forces pip to pick a wheel-satisfiable solve.
+    # Spleeter's transitive deps (old numba, old numpy via h5py) otherwise
+    # try to build from source and break on modern setuptools/clang.
+    subprocess.check_call([str(pip), "install", "--only-binary=:all:", *REQUIRED_PKGS])
 
 
 def bootstrap_and_reexec() -> None:
