@@ -231,9 +231,6 @@ def _pip_install_deps() -> None:
 
 
 def bootstrap_and_reexec() -> None:
-    if os.environ.get(BOOTSTRAP_ENV_FLAG) == "1":
-        die("bootstrap loop detected; venv is not usable")
-
     ensure_ffmpeg()
 
     if VENV_DIR.exists() and not _venv_is_compatible():
@@ -245,6 +242,8 @@ def bootstrap_and_reexec() -> None:
 
     # Re-exec inside the venv so pip/imports happen with its interpreter.
     if not _running_in_managed_venv():
+        if os.environ.get(BOOTSTRAP_ENV_FLAG) == "1":
+            die("bootstrap loop detected; venv is not usable")
         vp = _venv_python()
         env = os.environ.copy()
         env[BOOTSTRAP_ENV_FLAG] = "1"
